@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Shootings Dashboard</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+</head>
+<body>
+<header>
+  <h1>NYC Shootings</h1>
+  <p class="subhead" id="dataspan">Loading…</p>
+  <nav>
+    <button data-tab="counts" class="tab active">Counts</button>
+    <button data-tab="geography" class="tab">Geography</button>
+    <button data-tab="who" class="tab">Who</button>
+    <button data-tab="about" class="tab">About</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ============================ COUNTS ============================ -->
+<section id="counts" class="panel active">
+  <div class="filter-bar">
+    <label>Unit:
+      <span class="seg" id="unit-seg">
+        <button data-val="incidents" class="on">Incidents</button>
+        <button data-val="victims">Victims</button>
+      </span>
+    </label>
+    <label>Subset:
+      <span class="seg" id="murder-seg">
+        <button data-val="all" class="on">All</button>
+        <button data-val="fatal" id="seg-fatal">Fatal</button>
+        <button data-val="nonfatal" id="seg-nonfatal">Non-fatal</button>
+      </span>
+    </label>
+    <span class="meta" id="unit-explainer"></span>
+  </div>
+
+  <h2>365-day rolling count</h2>
+  <p class="caption">Each point shows the count over the 365 days ending on that date (that day plus
+    the 364 days prior, inclusive). Smooths out seasonal swings. Click a borough in the legend
+    to add or remove it. The shaded band marks NYC's COVID-19 State of Emergency
+    (March 12, 2020 – September 5, 2022). The dotted horizontal line shows the historical
+    citywide minimum, annotated with the specific end-day of the window when it was set.</p>
+  <div id="chart-rolling" class="chart"></div>
+
+  <h2>Cumulative shootings by day of year</h2>
+  <p class="caption">One line per year, color ramped oldest (cool) to most recent (warm).
+    The current year ends at a marker on its last day with data — not extrapolated.</p>
+  <div id="chart-cumulative" class="chart"></div>
+
+  <h2>Monthly counts</h2>
+  <div id="chart-monthly" class="chart"></div>
+</section>
+
+<!-- ============================ GEOGRAPHY ============================ -->
+<section id="geography" class="panel">
+  <p class="caption notice" style="background:#fee2e2;border-left-color:#dc2626">
+    <strong>⚠ Read this before interpreting anything below.</strong>
+    A substantial share of NYC shooting incidents are geocoded by NYPD to the precinct stationhouse
+    rather than the actual incident location. We detect those and exclude them from the
+    NTA, NYCHA, and map analyses on this page.
+    Coverage as of this build: <strong id="banner-usable-pct">…</strong> of incidents have usable
+    coordinates (<strong id="banner-precise-pct">…</strong> from the shooting dataset's own geocoding
+    plus <strong id="banner-recovered-pct">…</strong> recovered by cross-matching to the NYPD Complaint
+    dataset). The remaining <strong id="banner-fallback-pct">…</strong> are excluded.
+    Whether the usable subset is representative of all shootings cannot be verified from these
+    datasets alone.
+  </p>
+  <p class="caption">
+    Raw incident counts, not population-adjusted rates — a precinct with more residents will
+    appear higher even if its per-capita rate is similar. The most recent partial year is
+    excluded from heatmaps so an in-progress quarter doesn't make every area look like it's dropping.
+  </p>
+
+  <h2>Borough counts by year</h2>
+  <p class="caption">Numbers shown in each cell; color intensity scales with the value. Darker = more.</p>
+  <div class="sort-row">
+    <label>Show as:
+      <select id="boro-mode">
+        <option value="count" selected>Counts</option>
+        <option value="rate">Rate per 100,000 residents</option>
+      </select>
+    </label>
+    <span id="boro-rate-source" class="meta"></span>
+  </div>
+  <div id="chart-boro" class="chart small"></div>
+
+  <h2>Precinct counts by year</h2>
+  <p class="caption">All 77 precincts. Counts (not rates — precinct populations vary widely
+    and there's no annual precinct-level census). Click any column header to sort.
+    Year headers are sticky at the top of the table. <em>Blank cells = zero shootings that year.</em></p>
+  <div class="sort-row">
+    <label><input type="checkbox" id="precinct-group-by-boro"> Group by borough</label>
+  </div>
+  <div id="precinct-table-wrap" class="precinct-table-wrap">
+    <table id="precinct-table"><thead></thead><tbody></tbody></table>
+  </div>
+
+  <h2>Neighborhood hotspots (NTAs) — with linked map</h2>
+  <p class="caption">NYC Neighborhood Tabulation Areas are official boundaries from
+    NYC's Department of City Planning — the same geographies the Census uses to summarize
+    data about the city. ~262 NTAs cover the city; about 197 are populated residential areas
+    (parks/cemeteries/airports excluded).
+    Incident counts (one row per shooting, not per victim) include <strong>only precisely-geocoded
+    shootings</strong> (see About → Geocoding for why). Click a neighborhood name (or any number cell)
+    to zoom the map to that area + time window.</p>
+
+  <div class="map-controls">
+    <span class="meta" style="margin-right:auto"><strong>Map controls →</strong></span>
+    <label>Quick range:
+      <span class="seg" id="map-range-seg">
+        <button data-days="30">30d</button>
+        <button data-days="365" class="on">365d</button>
+        <button data-days="1825">5y</button>
+        <button data-days="0">All</button>
+      </span>
+    </label>
+    <label>From <input type="date" id="map-from"></label>
+    <label>To <input type="date" id="map-to"></label>
+    <label><input type="checkbox" id="map-fatal-only"> Fatal only</label>
+    <label><input type="checkbox" id="map-precise-only" checked> Hide precinct-fallback</label>
+    <label><input type="checkbox" id="map-nycha-only"> NYCHA only</label>
+    <span class="meta" style="margin-left:6px">Markers with a <strong style="color:#0369a1">dashed blue outline</strong> are coordinates recovered from a linked complaint record.</span>
+    <label>View:
+      <select id="map-mode">
+        <option value="cluster" selected>Clusters</option>
+        <option value="heat">Heatmap</option>
+        <option value="points">Points</option>
+      </select>
+    </label>
+    <span id="map-count" class="meta"></span>
+  </div>
+
+  <div class="nta-explorer">
+    <div class="nta-explorer-table">
+      <table id="nta-table"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="nta-explorer-map">
+      <div id="map"></div>
+    </div>
+  </div>
+  <p class="caption" id="map-quality"></p>
+
+  <h2>NYCHA developments</h2>
+  <p class="caption" id="nycha-quality"></p>
+  <p class="caption">Shootings within 100 ft of an NYCHA campus boundary. Each shooting is attributed
+    to at most one development (no double-counting), even when buffered polygons overlap in dense areas.
+    Sparkline column shows the year-by-year trajectory.</p>
+  <table id="nycha-table"><thead></thead><tbody></tbody></table>
+</section>
+
+<!-- ============================ WHO ============================ -->
+<section id="who" class="panel">
+  <p class="caption notice">
+    <strong>Note on missing data:</strong>
+    NYPD does not always identify a suspect. In our data, a meaningful share of incidents have
+    <em>no</em> suspect record at all (structural), and many suspect records have demographic
+    fields marked <em>UNKNOWN</em>. Both are shown explicitly below — never silently filtered out.
+    Suspect-side numbers are inherently incomplete.
+  </p>
+
+  <div class="filter-bar">
+    <label>Show:
+      <select id="who-side">
+        <option value="victims" selected>Victims</option>
+        <option value="offenders">Suspects</option>
+      </select>
+    </label>
+  </div>
+
+  <h2>By race, over time</h2>
+  <div id="chart-race" class="chart"></div>
+
+  <h2>By age group, over time</h2>
+  <div id="chart-age" class="chart"></div>
+
+  <h2>By sex, over time</h2>
+  <div id="chart-sex" class="chart"></div>
+
+  <h2 id="off-unrep-h2" style="display:none">Incidents with no identified suspect</h2>
+  <p class="caption" id="off-unrep-caption" style="display:none">
+    Share of incidents per year where NYPD's suspect dataset contains no record. This is structural
+    missingness — distinct from a record marked UNKNOWN.</p>
+  <div id="chart-no-offender" class="chart small" style="display:none"></div>
+
+  <h2>Location type</h2>
+  <p class="caption">Shootings by location classification. The <em>HOUSING</em> category includes both
+    NYCHA and private multi-dwelling buildings; <em>STREET</em> is most common throughout.
+    <em>UNKNOWN/PRE-2022</em> reflects records before NYPD added this field in 2022.</p>
+  <div id="chart-locclass" class="chart"></div>
+
+  <h2>Specific location descriptions (top 12)</h2>
+  <div id="chart-locdesc" class="chart"></div>
+</section>
+
+<!-- ============================ ABOUT ============================ -->
+<section id="about" class="panel">
+  <h2>About this dashboard</h2>
+  <p>Long-running personal project to track NYC shootings, rebuilt from a 10-year Excel workflow into a
+    Python pipeline + GitHub Pages site so the work can keep up with NYPD's quarterly data updates.</p>
+
+  <h2>Data sources</h2>
+  <ul id="sources"></ul>
+
+  <h2>Methodology notes</h2>
+  <ul>
+    <li><strong>Geocoding fallback to precinct stations.</strong>
+      About <strong id="fallback-pct">…</strong> of incidents have lat/lon set not to the actual
+      incident location but to the precinct stationhouse — NYPD's default when an address can't be
+      geocoded. Detected by flagging any exact lat/lon shared by ≥3 incidents that all belong
+      to one precinct. These incidents are excluded from NYCHA and NTA spatial joins,
+      and hidden by default on the map.</li>
+    <li><strong>Coordinate recovery via the NYPD Complaint dataset.</strong>
+      Many shootings also appear in the separate NYPD Complaint Data (Historic) feed, sometimes with
+      better lat/lon than the shooting dataset. We recover those where we can, using two rules:
+      <ul>
+        <li><em>Fatal shootings:</em> deterministic ID match — a MURDER complaint with
+          <code>cmplnt_num = incident_key + 'H<i>n</i>'</code> is treated as the same incident.</li>
+        <li><em>Non-fatal shootings:</em> fuzzy match on same date + same precinct + time within
+          ±60 minutes + offense in {FELONY ASSAULT, ROBBERY}, picking the time-closest candidate.</li>
+      </ul>
+      Recovered coordinates are also subject to a sanity check (must be within 5 km of the precinct
+      stationhouse). Validated against precisely-geocoded shootings as ground truth:
+      <ul>
+        <li>Fatal H-suffix match: 85% of matched coords land within 75 m of the true incident.</li>
+        <li>Non-fatal fuzzy match: 87% within 75 m of truth; 81% within 25 m.</li>
+        <li>Fatal shootings without an H-suffix match are <strong>not</strong> recovered via fuzzy
+          (validation showed only 43% accuracy for that path).</li>
+      </ul>
+      Recovered records are flagged <code>geocoding_quality = "precise_from_complaint"</code> and
+      a <code>coord_source</code> field records which rule fired. On the map they appear with a
+      dashed blue outline.</li>
+    <li><strong>Schema break in 2025.</strong> NYPD replaced its single all-in-one dataset with three normalized
+      datasets (incidents, victims, suspects/offenders). This dashboard reconciles them and uses the archived
+      dataset only to backfill the small number of historical incidents missing from the new feeds.</li>
+    <li><strong>Lat/lon swap.</strong> The current Shootings (2006-Present) dataset has its <code>latitude</code>
+      and <code>longitude</code> columns swapped in the API response. The pipeline detects and corrects this.</li>
+    <li><strong>Murder flag.</strong> Moved from incident-level to victim-level in the 2025 reorg; the
+      incident-level flag here is derived as TRUE if any victim has stat_murder_flg='Y'.</li>
+    <li><strong>NYCHA join.</strong> 100-foot buffer around official NYCHA campus polygons. NYPD geocodes
+      incidents to street centerlines, so strict point-in-polygon misses sidewalk-adjacent shootings.
+      Even with the buffer, each shooting is attributed to at most ONE development — no double-counting.</li>
+    <li><strong>COVID period.</strong> NYC declared a State of Emergency on March 12, 2020; Mayor Adams
+      rescinded it on September 5, 2022. Shaded as a single band on the rolling-count chart.</li>
+    <li><strong>Raw counts, not rates.</strong> Heatmaps and tables show shooting counts, not
+      population-adjusted rates. Precinct populations vary widely; high counts in big precincts may
+      not mean elevated per-capita risk.</li>
+    <li><strong>Most recent year is partial.</strong> The current quarter is excluded from year-by-year
+      heatmaps so an in-progress year doesn't make everything look like a drop-off.</li>
+    <li><strong>What this dashboard does not show.</strong> The NYPD shooting datasets contain no
+      domestic-violence indicator, so a DV vs non-DV split is not derivable. A planned future feature is a
+      baseline-comparison view that pegs the current year to 2019 (the last full year before COVID); not
+      yet implemented.</li>
+  </ul>
+
+  <h2>Build info</h2>
+  <p id="build-info"></p>
+</section>
+
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/dashboard.js"></script>
+</body>
+</html>
