@@ -97,14 +97,18 @@ function renderHeader() {
     ul.appendChild(li);
   }
 
-  // Geocoding-quality summary
+  // Geocoding-quality summary — set every span that exists in the current HTML.
   const dq = DATA.data_quality;
   const gq = dq.geocoding_quality;
-  document.getElementById("fallback-pct").textContent = `${gq.fallback_pct}%`;
-  document.getElementById("banner-fallback-pct").textContent = `${gq.fallback_pct}%`;
-  document.getElementById("banner-usable-pct").textContent = `${gq.usable_pct}%`;
-  document.getElementById("banner-precise-pct").textContent = `${gq.precise_pct}%`;
-  document.getElementById("banner-recovered-pct").textContent = `${gq.recovered_pct}%`;
+  const setIf = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setIf("fallback-pct",         `${gq.fallback_pct}%`);
+  setIf("banner-fallback-pct",  `${gq.fallback_pct}%`);
+  setIf("banner-usable-pct",    `${gq.usable_pct}%`);
+  setIf("banner-precise-pct",   `${gq.precise_pct}%`);
+  setIf("banner-recovered-pct", `${gq.recovered_pct}%`);
 
   // Map quality caption
   const sj = dq.spatial_join;
