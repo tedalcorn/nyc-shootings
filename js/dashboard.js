@@ -657,11 +657,23 @@ function sparklineSVG(values, width = 80, height = 18) {
   </svg>`;
 }
 
+let NYCHA_BUFFER = "100";  // chosen via radio toggle; key into r.by_buffer
+
 function renderNychaTable() {
   const d = DATA.nycha_clusters;
   const tbl = document.getElementById("nycha-table");
   const thead = tbl.querySelector("thead");
   const tbody = tbl.querySelector("tbody");
+
+  // Pick the current buffer; fall back to the largest available if 100ft slot
+  // is empty (e.g., old build emitted flat structure)
+  const availableBuffers = (d.buffers || [100]).map(String);
+  if (!availableBuffers.includes(NYCHA_BUFFER)) NYCHA_BUFFER = availableBuffers[0];
+
+  // Pull per-row figures for the active buffer; supports legacy flat structure too
+  const pick = r => (r.by_buffer ? r.by_buffer[NYCHA_BUFFER] : {
+    total: r.total, fatal_total: r.fatal_total, last_365: r.last_365, by_year: r.by_year || [],
+  });
 
   const cols = [
     { key: "name", label: "Development", num: false },
@@ -693,27 +705,41 @@ function renderNychaTable() {
     }
     thead.appendChild(tr);
 
-    const rows = [...d.developments].filter(r => r.total > 0);
+    const rows = d.developments.map(r => ({ ...r, _pick: pick(r) }))
+      .filter(r => r._pick.total > 0);
     rows.sort((a, b) => {
-      const va = a[sortKey], vb = b[sortKey];
-      if (typeof va === "number") return sortDesc ? vb - va : va - vb;
-      return sortDesc ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb));
+      let va, vb;
+      if (sortKey === "name" || sortKey === "borough") {
+        va = a[sortKey]; vb = b[sortKey];
+        return sortDesc ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb));
+      }
+      va = a._pick[sortKey]; vb = b._pick[sortKey];
+      return sortDesc ? vb - va : va - vb;
     });
     tbody.innerHTML = "";
     for (const r of rows) {
       const row = document.createElement("tr");
-      if (r.last_365 >= CONFIG.nyhcaVeryHotThreshold) row.classList.add("very-hot");
-      else if (r.last_365 >= CONFIG.nyhcaHotThreshold) row.classList.add("hot");
+      const p = r._pick;
+      if (p.last_365 >= CONFIG.nyhcaVeryHotThreshold) row.classList.add("very-hot");
+      else if (p.last_365 >= CONFIG.nyhcaHotThreshold) row.classList.add("hot");
       for (const c of cols) {
         const td = document.createElement("td");
-        if (c.key === "trend") {
-          // Show sparkline only if there's enough variation to be informative
-          if (r.total >= 5) td.innerHTML = sparklineSVG(r.by_year);
+        if (c.key === "name") {
+          const btn = document.createElement("button");
+          btn.textContent = r.name;
+          btn.className = "dev-link";
+          btn.style.cssText = "background:none; border:none; padding:0; color:#1f6feb; cursor:pointer; text-align:left; font:inherit; text-decoration:underline;";
+          btn.addEventListener("click", () => openDevMap(r));
+          td.appendChild(btn);
+        } else if (c.key === "trend") {
+          if (p.total >= 5) td.innerHTML = sparklineSVG(p.by_year);
           else td.textContent = "–";
+        } else if (c.key === "borough") {
+          td.textContent = r.borough;
         } else {
-          td.textContent = c.num ? fmt(r[c.key]) : r[c.key];
+          td.textContent = fmt(p[c.key]);
+          td.classList.add("num");
         }
-        if (c.num) td.classList.add("num");
         row.appendChild(td);
       }
       tbody.appendChild(row);
@@ -721,6 +747,108 @@ function renderNychaTable() {
   }
   rebuild();
 }
+
+// Re-render the table when the buffer radio changes
+document.addEventListener("change", e => {
+  if (e.target && e.target.name === "nycha-buffer") {
+    NYCHA_BUFFER = e.target.value;
+    renderNychaTable();
+  }
+});
+
+// ----- Per-development map modal -----
+let DEV_GEO = null;     // FeatureCollection, lazy-loaded
+let DEV_MAP = null;     // Leaflet map instance, reused across openings
+
+async function openDevMap(dev) {
+  const overlay = document.getElementById("dev-map-overlay");
+  const title = document.getElementById("dev-map-title");
+  const meta = document.getElementById("dev-map-meta");
+  title.textContent = dev.name + " (" + dev.borough + ")";
+  const p = dev.by_buffer ? dev.by_buffer[NYCHA_BUFFER] : dev;
+  meta.textContent = `Buffer ${NYCHA_BUFFER} ft · ${p.total} all-time shootings · ${p.fatal_total} fatal · ${p.last_365} in the last 365 days`;
+  overlay.style.display = "flex";
+
+  if (!DEV_GEO) {
+    try {
+      const r = await fetch("data/nycha_geometries.json");
+      DEV_GEO = await r.json();
+    } catch (e) {
+      document.getElementById("dev-map").innerHTML = "<p style='padding:20px'>Couldn't load polygon data.</p>";
+      return;
+    }
+  }
+  const feat = DEV_GEO.features.find(f => (f.properties.tds || "") === dev.tds);
+  if (!feat) {
+    document.getElementById("dev-map").innerHTML = "<p style='padding:20px'>No polygon on file for this development.</p>";
+    return;
+  }
+
+  // (Re)build the Leaflet map each open so bounds re-fit cleanly
+  if (DEV_MAP) { DEV_MAP.remove(); DEV_MAP = null; }
+  DEV_MAP = L.map("dev-map");
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; OpenStreetMap &copy; CartoDB",
+    maxZoom: 19,
+  }).addTo(DEV_MAP);
+
+  // The polygon, plus a dashed "buffer" outline at the current buffer width
+  const polygon = L.geoJSON(feat, {
+    style: { color: "#1f6feb", weight: 2, fillColor: "#1f6feb", fillOpacity: 0.08 },
+  }).addTo(DEV_MAP);
+
+  // Approximate buffer ring: degrees per foot at NYC's latitude
+  // 1 ft of latitude ≈ 1 / 364320 deg ; longitude 1 ft ≈ 1 / 287000 at lat ~40.7
+  const bufferFt = Number(NYCHA_BUFFER);
+  L.geoJSON(feat, {
+    style: {
+      color: "#1f6feb", weight: 1, dashArray: "5,4",
+      fillOpacity: 0, opacity: 0.55,
+    },
+    // Approximate buffer by inflating polygon — Leaflet doesn't do real buffers,
+    // so we draw the bbox padded by the buffer width as a rough indicator.
+  }).addTo(DEV_MAP);
+
+  // Plot incidents from DATA.incidents that fall within the polygon's bbox + ~600ft
+  const bounds = polygon.getBounds();
+  const padDegLat = 600 / 364320;
+  const padDegLon = 600 / 287000;
+  const padded = L.latLngBounds(
+    [bounds.getSouth() - padDegLat, bounds.getWest() - padDegLon],
+    [bounds.getNorth() + padDegLat, bounds.getEast() + padDegLon],
+  );
+  if (!MAP_INCIDENTS) MAP_INCIDENTS = parseIncidents();
+  const incidents = MAP_INCIDENTS.filter(i =>
+    i.lat != null && i.lon != null && padded.contains([i.lat, i.lon])
+  );
+  for (const i of incidents) {
+    L.circleMarker([i.lat, i.lon], {
+      radius: 4, weight: 1, color: "#fff",
+      fillColor: i.fatal ? "#dc2626" : "#f59e0b",
+      fillOpacity: 0.92,
+    }).bindTooltip(
+      `${i.date || ""} · ${i.fatal ? "fatal" : "non-fatal"}`,
+      { direction: "top" }
+    ).addTo(DEV_MAP);
+  }
+
+  // Fit to the padded bounds so user can see the polygon and surrounding incidents
+  DEV_MAP.fitBounds(padded, { padding: [16, 16] });
+}
+
+function closeDevMap() {
+  const overlay = document.getElementById("dev-map-overlay");
+  overlay.style.display = "none";
+}
+document.getElementById("dev-map-close").addEventListener("click", closeDevMap);
+document.getElementById("dev-map-overlay").addEventListener("click", e => {
+  if (e.target.id === "dev-map-overlay") closeDevMap();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.getElementById("dev-map-overlay").style.display === "flex") {
+    closeDevMap();
+  }
+});
 
 // ----- Map -----
 let MAP = null;
