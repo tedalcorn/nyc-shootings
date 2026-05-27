@@ -359,14 +359,14 @@ function renderBoroHeatmap() {
       return p ? (100000 * rawCounts[i][j] / p) : null;
     }));
     hoverFmt = `%{y}, %{x}: %{z:.1f} per 100k (%{customdata:,} ${unitNoun})<extra></extra>`;
-    label = "Shootings";
+    label = unit === "victims" ? "Victims per 100K residents" : "Shootings per 100K residents";
     const latestYear = pops.years[pops.years.length - 1];
     srcNote = "Population: Census Bureau Vintage 2024 / intercensal estimates. "
               + `${latestYear} carried forward where no later vintage is published.`;
   } else {
     z = rawCounts;
     hoverFmt = "%{y}, %{x}: %{z:,}<extra></extra>";
-    label = "Shootings";
+    label = unit === "victims" ? "Victims" : "Shootings";
   }
   document.getElementById("boro-rate-source").textContent = srcNote;
 
