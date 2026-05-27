@@ -853,7 +853,7 @@ async function openDevMap(dev) {
     }
   }
 
-  // 3. Bounding box for fitting + incident filtering
+  // 3. Bounding box for map framing (always works, no Turf dependency)
   let bbox;
   if (bufferedFeat) {
     bbox = L.geoJSON(bufferedFeat).getBounds();
@@ -867,11 +867,34 @@ async function openDevMap(dev) {
     );
   }
 
-  // 4. Shooting markers within the buffered shape
+  // 4. Shooting markers. Two filters to match the table count:
+  //    (a) exclude precinct_fallback rows — those cluster at the stationhouse and
+  //        the pipeline excludes them from the spatial join for the same reason
+  //    (b) exact point-in-polygon against the buffered shape (not just bbox)
   if (!MAP_INCIDENTS) MAP_INCIDENTS = parseIncidents();
-  const incidents = MAP_INCIDENTS.filter(i =>
-    i.lat != null && i.lon != null && bbox.contains([i.lat, i.lon]),
+  const eligible = MAP_INCIDENTS.filter(i =>
+    i.lat != null && i.lon != null && i.geo_q !== "precinct_fallback"
   );
+
+  let incidents;
+  let usedFallback = false;
+  if (bufferedFeat && typeof turf !== "undefined" &&
+      typeof turf.point === "function" && typeof turf.booleanPointInPolygon === "function") {
+    incidents = [];
+    for (const i of eligible) {
+      if (!bbox.contains([i.lat, i.lon])) continue;
+      try {
+        if (turf.booleanPointInPolygon(turf.point([i.lon, i.lat]), bufferedFeat)) {
+          incidents.push(i);
+        }
+      } catch (e) {
+        // skip any single problematic point
+      }
+    }
+  } else {
+    usedFallback = true;
+    incidents = eligible.filter(i => bbox.contains([i.lat, i.lon]));
+  }
   for (const i of incidents) {
     L.circleMarker([i.lat, i.lon], {
       radius: 5, weight: 1.5, color: "#fff",
@@ -894,7 +917,8 @@ async function openDevMap(dev) {
   }, 250);
 
   meta.textContent +=
-    ` · ${incidents.length} plotted on map (${incidents.filter(i => i.fatal).length} fatal)`;
+    ` · ${incidents.length} plotted on map (${incidents.filter(i => i.fatal).length} fatal)` +
+    (usedFallback ? " — approximate (bbox filter)" : "");
 }
 
 function closeDevMap() {
