@@ -30,6 +30,11 @@ function formatLongDate(isoDate) {
   const [y, m, d] = isoDate.split("-").map(Number);
   return `${MONTHS_SHORT[m - 1]} ${d}, ${y}`;
 }
+function formatLongDateAbbr(isoDate) {
+  // "2026-02-15" -> "Feb. 15, 2026"
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return `${MONTHS_SHORT[m - 1]}. ${d}, ${y}`;
+}
 function trailingPeriodLabel(endDate) {
   // "2026-02-28" -> "Mar 1, 2025 – Feb 28, 2026"  (window = day + 364 prior, inclusive)
   const end = new Date(endDate);
@@ -75,7 +80,8 @@ function renderHeader() {
   const m = DATA.meta;
   const [start, end] = m.date_range;
   document.getElementById("dataspan").textContent =
-    `${fmt(m.totals.incidents)} incidents · ${fmt(m.totals.victims)} victims · ${start} to ${end}`;
+    `${fmt(m.totals.incidents)} incidents · ${fmt(m.totals.victims)} victims · ` +
+    `${formatLongDateAbbr(start)} to ${formatLongDateAbbr(end)}`;
 
   document.getElementById("build-info").textContent =
     `Database built ${m.built_at}. Totals: ` +
@@ -128,8 +134,15 @@ function findHistoricalMin(values, dates) {
   return { value: values[minIdx], date: dates[minIdx] };
 }
 
-function currentUnit() {
-  return document.querySelector("#unit-seg button.on").dataset.val;
+// Shared unit state across all tabs. Both #unit-seg (counts) and #unit-seg-geo (geography)
+// reflect and update this. setUnit() syncs both segs to the same value.
+let UNIT_STATE = "incidents";
+function currentUnit() { return UNIT_STATE; }
+function setUnit(val) {
+  UNIT_STATE = val;
+  for (const seg of document.querySelectorAll("#unit-seg, #unit-seg-geo")) {
+    seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.val === val));
+  }
 }
 function currentMurder() {
   return document.querySelector("#murder-seg button.on").dataset.val;
@@ -235,12 +248,16 @@ function renderCumulative() {
     return `hsl(212, 55%, ${lightness}%)`;
   }
 
+  // Year before the current year (newest historical) — kept in the legend explicitly
+  const newestHistorical = maxYear - 1;
+
   const x = Array.from({length: 366}, (_, i) => i + 1);
   const traces = [];
   for (const y of years) {
     const series = yearData[y][which];
+    // Only show 3 years in the legend: oldest historical, newest historical, current.
+    const showLegend = (y === minYear || y === newestHistorical || y === maxYear);
     if (y === maxYear) {
-      // Truncate at last actual data day, add an end marker
       const last = lastDataDay(series);
       const xt = x.slice(0, last + 1);
       const yt = series.slice(0, last + 1);
@@ -248,44 +265,33 @@ function renderCumulative() {
         x: xt, y: yt, type: "scatter", mode: "lines+markers",
         name: String(y),
         line: { color: color(y), width: 2.8 },
-        marker: {
-          color: color(y), size: 4,
-          symbol: xt.map((_, i) => i === xt.length - 1 ? "circle" : "circle"),
-          line: { width: 0 },
-        },
-        // Highlight just the last point with a bigger marker via a second trace below
+        marker: { color: color(y), size: 4, line: { width: 0 } },
         hovertemplate: `${y}, day %{x}: %{y:,}<extra></extra>`,
+        showlegend: true,
       });
       traces.push({
         x: [xt[xt.length - 1]], y: [yt[yt.length - 1]],
-        type: "scatter", mode: "markers+text",
-        name: `${y} (latest)`,
+        type: "scatter", mode: "markers",
         marker: { color: color(y), size: 10, line: { color: "white", width: 2 } },
-        text: [`${y}: ${fmt(yt[yt.length - 1])}`],
-        textposition: "middle right",
-        textfont: { size: 11, color: color(y) },
-        showlegend: false,
-        hoverinfo: "skip",
+        showlegend: false, hoverinfo: "skip",
       });
     } else {
-      // Older years slightly thinner; recent years a bit thicker so darker = thicker = newer
       const t = (y - minYear) / (maxYear - minYear || 1);
-      const w = 0.8 + t * 1.0;  // 0.8 → 1.8
+      const w = 0.8 + t * 1.0;
       traces.push({
         x: x, y: series, type: "scatter", mode: "lines",
         name: String(y),
         line: { color: color(y), width: w },
         hovertemplate: `${y}, day %{x}: %{y:,}<extra></extra>`,
+        showlegend: showLegend,
       });
     }
   }
-  // Order traces so the newest is drawn on top (last) — already sorted ascending by year
-  // and we push to traces in that order, so newest is last → drawn on top.
   const layout = plotlyLayoutDefaults({
     yaxis: { title: "Cumulative shootings", rangemode: "tozero" },
-    xaxis: { title: "Day of year", range: [1, 380] },
-    legend: { orientation: "v", y: 1, x: 1.02 },
-    margin: { l: 50, r: 100, t: 20, b: 50 },
+    xaxis: { title: "Day of year", range: [1, 366] },
+    legend: { orientation: "h", y: -0.18, x: 0 },
+    margin: { l: 50, r: 20, t: 20, b: 50 },
   });
   Plotly.react("chart-cumulative", traces, layout, plotlyConfig());
 }
@@ -332,29 +338,31 @@ const REDS_DARK_HIGH = [
 
 function renderBoroHeatmap() {
   const mode = document.getElementById("boro-mode").value;
+  const unit = currentUnit();
   const d = DATA.boro_year;
   const pops = DATA.populations;
   const years = d.years;
+  const unitBlock = d[unit];
 
   let z, hoverFmt, label, srcNote = "";
-  const rawCounts = d.boros.map(r => r.counts);
-  const boroNames = d.boros.map(r => r.boro);
+  const rawCounts = unitBlock.boros.map(r => r.counts);
+  const boroNames = unitBlock.boros.map(r => r.boro);
+  const unitNoun = unit === "victims" ? "victims" : "shootings";
 
   if (mode === "rate" && pops) {
     z = boroNames.map((b, i) => years.map((y, j) => {
       const p = (pops.by_boro[b] || [])[pops.years.indexOf(y)];
       return p ? (100000 * rawCounts[i][j] / p) : null;
     }));
-    hoverFmt = "%{y}, %{x}: %{z:.1f} per 100k (%{customdata:,} incidents)<extra></extra>";
-    label = "Shootings per 100,000 residents";
-    // Use the most recent year's source for the source note
+    hoverFmt = `%{y}, %{x}: %{z:.1f} per 100k (%{customdata:,} ${unitNoun})<extra></extra>`;
+    label = "Shootings";
     const latestYear = pops.years[pops.years.length - 1];
     srcNote = "Population: Census Bureau Vintage 2024 / intercensal estimates. "
               + `${latestYear} carried forward where no later vintage is published.`;
   } else {
     z = rawCounts;
     hoverFmt = "%{y}, %{x}: %{z:,}<extra></extra>";
-    label = "Shooting incidents (count)";
+    label = "Shootings";
   }
   document.getElementById("boro-rate-source").textContent = srcNote;
 
@@ -406,15 +414,16 @@ function redCellBg(v, vmax) {
 let PRECINCT_SORT = { key: "recent", desc: true };
 
 function renderPrecinctTable() {
+  const unit = currentUnit();
   const d = DATA.precinct_year;
+  const unitBlock = d[unit];
   const groupByBoro = document.getElementById("precinct-group-by-boro").checked;
   const tbl = document.getElementById("precinct-table");
   const thead = tbl.querySelector("thead");
   const tbody = tbl.querySelector("tbody");
 
-  // Max value across the whole matrix (for color scaling)
   const vmax = Math.max(
-    ...d.precincts.flatMap(p => p.counts), 1
+    ...unitBlock.precincts.flatMap(p => p.counts), 1
   );
 
   // ---- Header
@@ -484,10 +493,9 @@ function renderPrecinctTable() {
   }
 
   tbody.innerHTML = "";
-  const rows = [...d.precincts];
+  const rows = [...unitBlock.precincts];
 
   if (groupByBoro) {
-    // Group by borough, sort within each by current sort
     const boroOrder = ["BRONX", "BROOKLYN", "MANHATTAN", "QUEENS", "STATEN ISLAND"];
     const groups = {};
     for (const r of rows) {
@@ -675,13 +683,21 @@ function renderNychaTable() {
     total: r.total, fatal_total: r.fatal_total, last_365: r.last_365, by_year: r.by_year || [],
   });
 
+  // Compute formatted date-range labels: "Mar. 11, 2025–Mar. 10, 2026" and "Jan. 1, 2006–Mar. 10, 2026"
+  function isoMinusDays(iso, days) {
+    const d = new Date(iso);
+    d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10);
+  }
+  const last365Label = `${formatLongDateAbbr(isoMinusDays(d.as_of, 364))}–${formatLongDateAbbr(d.as_of)}`;
+  const allTimeLabel = `${formatLongDateAbbr(`${d.years[0]}-01-01`)}–${formatLongDateAbbr(d.as_of)}`;
+
   const cols = [
     { key: "name", label: "Development", num: false },
     { key: "borough", label: "Borough", num: false },
-    { key: "last_365", label: `Last 365 days (through ${d.as_of})`, num: true },
-    { key: "total", label: "All-time", num: true },
+    { key: "last_365", label: last365Label, num: true },
+    { key: "total", label: allTimeLabel, num: true },
     { key: "fatal_total", label: "Fatal", num: true },
-    { key: "trend", label: `Trend (${d.years[0]}–${d.years[d.years.length-1]})`, num: false },
   ];
 
   let sortKey = "last_365";
@@ -695,8 +711,7 @@ function renderNychaTable() {
       th.textContent = c.label;
       if (c.num) th.classList.add("num");
       if (c.key === sortKey) th.classList.add(sortDesc ? "sorted-desc" : "sorted-asc");
-      if (c.key === "trend") th.style.cursor = "default";
-      else th.addEventListener("click", () => {
+      th.addEventListener("click", () => {
         if (sortKey === c.key) sortDesc = !sortDesc;
         else { sortKey = c.key; sortDesc = c.num; }
         rebuild();
@@ -731,9 +746,6 @@ function renderNychaTable() {
           btn.style.cssText = "background:none; border:none; padding:0; color:#1f6feb; cursor:pointer; text-align:left; font:inherit; text-decoration:underline;";
           btn.addEventListener("click", () => openDevMap(r));
           td.appendChild(btn);
-        } else if (c.key === "trend") {
-          if (p.total >= 5) td.innerHTML = sparklineSVG(p.by_year);
-          else td.textContent = "–";
         } else if (c.key === "borough") {
           td.textContent = r.borough;
         } else {
@@ -757,8 +769,9 @@ document.addEventListener("change", e => {
 });
 
 // ----- Per-development map modal -----
-let DEV_GEO = null;     // FeatureCollection, lazy-loaded
-let DEV_MAP = null;     // Leaflet map instance, reused across openings
+let DEV_GEO = null;            // FeatureCollection, lazy-loaded
+let DEV_MAP = null;            // Leaflet map instance, reused across openings
+let DEV_INCIDENTS_IDX = null;  // {tds: {buffer: [incident_key]}}, lazy-loaded
 
 async function openDevMap(dev) {
   const overlay = document.getElementById("dev-map-overlay");
@@ -867,58 +880,75 @@ async function openDevMap(dev) {
     );
   }
 
-  // 4. Shooting markers. Two filters to match the table count:
-  //    (a) exclude precinct_fallback rows — those cluster at the stationhouse and
-  //        the pipeline excludes them from the spatial join for the same reason
-  //    (b) exact point-in-polygon against the buffered shape (not just bbox)
+  // 4. Shooting markers — use the EXACT incident_keys the pipeline computed for
+  // this (development, buffer). Guarantees the plotted count matches the table.
   if (!MAP_INCIDENTS) MAP_INCIDENTS = parseIncidents();
-  const eligible = MAP_INCIDENTS.filter(i =>
-    i.lat != null && i.lon != null && i.geo_q !== "precinct_fallback"
-  );
-
-  let incidents;
-  let usedFallback = false;
-  if (bufferedFeat && typeof turf !== "undefined" &&
-      typeof turf.point === "function" && typeof turf.booleanPointInPolygon === "function") {
-    incidents = [];
-    for (const i of eligible) {
-      if (!bbox.contains([i.lat, i.lon])) continue;
-      try {
-        if (turf.booleanPointInPolygon(turf.point([i.lon, i.lat]), bufferedFeat)) {
-          incidents.push(i);
-        }
-      } catch (e) {
-        // skip any single problematic point
-      }
+  if (!DEV_INCIDENTS_IDX) {
+    try {
+      const r = await fetch("data/nycha_dev_incidents.json");
+      const j = await r.json();
+      DEV_INCIDENTS_IDX = j.by_dev_buffer || {};
+    } catch (e) {
+      DEV_INCIDENTS_IDX = {};
+      console.warn("Couldn't load nycha_dev_incidents.json:", e);
     }
-  } else {
-    usedFallback = true;
-    incidents = eligible.filter(i => bbox.contains([i.lat, i.lon]));
   }
+  const targetKeys = new Set(
+    (DEV_INCIDENTS_IDX[dev.tds] && DEV_INCIDENTS_IDX[dev.tds][NYCHA_BUFFER]) || []
+  );
+  const incidents = MAP_INCIDENTS.filter(i => targetKeys.has(i.key));
+
+  // Group incidents by coordinate so we don't render multiple markers stacked invisibly
+  // at the same intersection — one marker per location, sized by count, popup lists all.
+  const byCoord = new Map();
   for (const i of incidents) {
-    L.circleMarker([i.lat, i.lon], {
-      radius: 5, weight: 1.5, color: "#fff",
-      fillColor: i.fatal ? "#dc2626" : "#f59e0b",
+    const k = `${i.lat.toFixed(5)},${i.lon.toFixed(5)}`;
+    if (!byCoord.has(k)) byCoord.set(k, []);
+    byCoord.get(k).push(i);
+  }
+  for (const group of byCoord.values()) {
+    const anyFatal = group.some(g => g.fatal);
+    const radius = 5 + Math.min(group.length - 1, 6) * 1.2;  // grows with stack size
+    const m = L.circleMarker([group[0].lat, group[0].lon], {
+      radius, weight: 1.5, color: "#fff",
+      fillColor: anyFatal ? "#dc2626" : "#f59e0b",
       fillOpacity: 0.92,
-    }).bindTooltip(
-      `${i.date} · ${i.fatal ? "fatal" : "non-fatal"}` +
-      (i.loc_desc ? ` · ${i.loc_desc}` : ""),
-      { direction: "top" },
-    ).addTo(DEV_MAP);
+    });
+    // Tooltip on hover: just the count summary
+    const totalVic = group.reduce((s, g) => s + (g.vic_n || 0), 0);
+    const fatalCount = group.filter(g => g.fatal).length;
+    const hover = group.length === 1
+      ? `${group[0].date} · ${group[0].fatal ? "fatal" : "non-fatal"} · ` +
+        `${group[0].vic_n || "?"} victim${(group[0].vic_n || 0) === 1 ? "" : "s"}`
+      : `${group.length} shootings stacked · ${fatalCount} fatal · ${totalVic} victims total`;
+    m.bindTooltip(hover, { direction: "top" });
+    // Popup on click: full list when stacked
+    if (group.length > 1) {
+      const lines = group
+        .sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map(i => `<li>${i.date} — ${i.fatal ? "<strong style='color:#b91c1c'>fatal</strong>" : "non-fatal"}` +
+                  ` · ${i.vic_n || "?"} victim${(i.vic_n || 0) === 1 ? "" : "s"}</li>`)
+        .join("");
+      m.bindPopup(
+        `<strong>${group.length} shootings at this location</strong>` +
+        `<ul style="margin:6px 0 0 18px;padding:0;font-size:12.5px">${lines}</ul>`
+      );
+    }
+    m.addTo(DEV_MAP);
   }
 
   // 5. NOW fit to the buffered bounds (size is known correct from step 0)
   DEV_MAP.fitBounds(bbox, { padding: [24, 24], maxZoom: 18 });
-  // And once more after any pending layout settles.
   setTimeout(() => {
     if (!DEV_MAP) return;
     DEV_MAP.invalidateSize();
     DEV_MAP.fitBounds(bbox, { padding: [24, 24], maxZoom: 18 });
   }, 250);
 
+  const fatalN = incidents.filter(i => i.fatal).length;
   meta.textContent +=
-    ` · ${incidents.length} plotted on map (${incidents.filter(i => i.fatal).length} fatal)` +
-    (usedFallback ? " — approximate (bbox filter)" : "");
+    ` · ${incidents.length} plotted at ${byCoord.size} location${byCoord.size === 1 ? "" : "s"} ` +
+    `(${fatalN} fatal)`;
 }
 
 function closeDevMap() {
@@ -956,6 +986,7 @@ function parseIncidents() {
     lat: r[idx.latitude],
     lon: r[idx.longitude],
     fatal: r[idx.fatal],
+    vic_n: r[idx.vic_n],
     loc_class: r[idx.loc_class],
     loc_desc: r[idx.loc_desc],
     nycha: r[idx.nycha],
@@ -1251,6 +1282,7 @@ async function init() {
   // Wire up segmented controls (NYT-pattern: click button → set .on)
   function wireSeg(segId, onChange) {
     const seg = document.getElementById(segId);
+    if (!seg) return;
     seg.addEventListener("click", e => {
       const btn = e.target.closest("button");
       if (!btn) return;
@@ -1260,23 +1292,25 @@ async function init() {
   }
   function refreshUnitLabels() {
     const unit = currentUnit();
-    // Update segmented labels for "fatal/nonfatal" subset
     document.getElementById("seg-fatal").textContent =
       unit === "incidents" ? "1+ fatality" : "Fatal (died)";
     document.getElementById("seg-nonfatal").textContent =
       unit === "incidents" ? "No fatalities" : "Non-fatal";
-    document.getElementById("unit-explainer").textContent =
-      unit === "incidents"
-        ? "Incidents = one row per shooting event (regardless of victim count)."
-        : "Victims = one row per person shot.";
   }
-  wireSeg("unit-seg", () => {
+  // Both unit segs (#unit-seg on Counts, #unit-seg-geo on Geography) update shared UNIT_STATE
+  function onUnitClick(e) {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    setUnit(btn.dataset.val);
     refreshUnitLabels();
     if (RENDERED.counts) renderCounts();
-  });
-  wireSeg("murder-seg", () => {
-    if (RENDERED.counts) renderCounts();
-  });
+    if (RENDERED.geography) renderGeography();
+  }
+  for (const segId of ["unit-seg", "unit-seg-geo"]) {
+    const seg = document.getElementById(segId);
+    if (seg) seg.addEventListener("click", onUnitClick);
+  }
+  wireSeg("murder-seg", () => { if (RENDERED.counts) renderCounts(); });
   refreshUnitLabels();
 
   document.getElementById("precinct-group-by-boro").addEventListener("change", () => {

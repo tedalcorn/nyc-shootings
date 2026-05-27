@@ -46,20 +46,12 @@
         <button data-val="nonfatal" id="seg-nonfatal">Non-fatal</button>
       </span>
     </label>
-    <span class="meta" id="unit-explainer"></span>
   </div>
 
   <h2>365-day rolling count</h2>
-  <p class="caption">Each point shows the count over the 365 days ending on that date (that day plus
-    the 364 days prior, inclusive). Smooths out seasonal swings. Click a borough in the legend
-    to add or remove it. The shaded band marks NYC's COVID-19 State of Emergency
-    (March 12, 2020 – September 5, 2022). The dotted horizontal line shows the historical
-    citywide minimum, annotated with the specific end-day of the window when it was set.</p>
   <div id="chart-rolling" class="chart"></div>
 
   <h2>Cumulative shootings by day of year</h2>
-  <p class="caption">One line per year, color ramped oldest (cool) to most recent (warm).
-    The current year ends at a marker on its last day with data — not extrapolated.</p>
   <div id="chart-cumulative" class="chart"></div>
 
   <h2>Monthly counts</h2>
@@ -69,25 +61,26 @@
 <!-- ============================ GEOGRAPHY ============================ -->
 <section id="geography" class="panel">
   <p class="caption notice" style="background:#fee2e2;border-left-color:#dc2626">
-    <strong>⚠ Read this before interpreting anything below.</strong>
-    A substantial share of NYC shooting incidents are geocoded by NYPD to the precinct stationhouse
-    rather than the actual incident location. We detect those and exclude them from the
-    NTA, NYCHA, and map analyses on this page.
-    Coverage as of this build: <strong id="banner-usable-pct">…</strong> of incidents have usable
-    coordinates (<strong id="banner-precise-pct">…</strong> from the shooting dataset's own geocoding
-    plus <strong id="banner-recovered-pct">…</strong> recovered by cross-matching to the NYPD Complaint
-    dataset). The remaining <strong id="banner-fallback-pct">…</strong> are excluded.
-    Whether the usable subset is representative of all shootings cannot be verified from these
-    datasets alone.
-  </p>
-  <p class="caption">
-    Raw incident counts, not population-adjusted rates — a precinct with more residents will
-    appear higher even if its per-capita rate is similar. The most recent partial year is
-    excluded from heatmaps so an in-progress quarter doesn't make every area look like it's dropping.
+    <strong>⚠</strong>
+    NYPD geocodes about half of shooting incidents to the precinct stationhouse rather than the
+    actual incident location. We mapped the <strong id="banner-precise-pct">52.4%</strong> with
+    non-precinct coordinates and inferred location for an additional
+    <strong id="banner-recovered-pct">7%</strong> by cross-matching to the NYPD Complaint dataset.
+    The other <strong id="banner-fallback-pct">40.6%</strong> are not mapped to a specific location —
+    they're still counted in the borough and precinct totals below, but excluded from the
+    Neighborhood (NTA), NYCHA-development, and map views.
   </p>
 
+  <div class="filter-bar">
+    <label>Unit:
+      <span class="seg" id="unit-seg-geo">
+        <button data-val="incidents" class="on">Incidents</button>
+        <button data-val="victims">Victims</button>
+      </span>
+    </label>
+  </div>
+
   <h2>Borough counts by year</h2>
-  <p class="caption">Numbers shown in each cell; color intensity scales with the value. Darker = more.</p>
   <div class="sort-row">
     <label>Show as:
       <select id="boro-mode">
@@ -100,9 +93,6 @@
   <div id="chart-boro" class="chart small"></div>
 
   <h2>Precinct counts by year</h2>
-  <p class="caption">All 77 precincts. Counts (not rates — precinct populations vary widely
-    and there's no annual precinct-level census). Click any column header to sort.
-    Year headers are sticky at the top of the table. <em>Blank cells = zero shootings that year.</em></p>
   <div class="sort-row">
     <label><input type="checkbox" id="precinct-group-by-boro"> Group by borough</label>
   </div>
