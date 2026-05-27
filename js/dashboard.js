@@ -797,13 +797,29 @@ async function openDevMap(dev) {
     return;
   }
 
-  // Let the browser lay the modal out before Leaflet measures the container.
-  // requestAnimationFrame alone has been unreliable in some Safari versions —
-  // a small setTimeout is more dependable.
-  await new Promise(r => setTimeout(r, 30));
+  // Wait for the modal to fully lay out so Leaflet can measure the container.
+  await new Promise(r => setTimeout(r, 50));
+
+  // Compute polygon centroid up front so we can setView immediately.
+  // (Leaflet draws nothing visible until the map has a view; doing setView FIRST
+  // means layers added next render correctly.)
+  function featureCenter(feature) {
+    const coords = feature.geometry.coordinates;
+    let lats = [], lons = [];
+    function walk(arr) {
+      if (typeof arr[0] === "number") { lons.push(arr[0]); lats.push(arr[1]); }
+      else arr.forEach(walk);
+    }
+    walk(coords);
+    return [
+      (Math.min(...lats) + Math.max(...lats)) / 2,
+      (Math.min(...lons) + Math.max(...lons)) / 2,
+    ];
+  }
+  const center = featureCenter(feat);
 
   try {
-    DEV_MAP = L.map(newMapDiv, { zoomControl: true, preferCanvas: false });
+    DEV_MAP = L.map(newMapDiv, { zoomControl: true }).setView(center, 16);
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
       attribution: "&copy; OpenStreetMap &copy; CartoDB",
       maxZoom: 19,
@@ -814,12 +830,15 @@ async function openDevMap(dev) {
     return;
   }
 
-  // 1. Development polygon
+  // Force size recalc NOW so subsequent layer adds and fitBounds use real dimensions.
+  DEV_MAP.invalidateSize();
+
+  // 1. Polygon
   const polygon = L.geoJSON(feat, {
     style: { color: "#1f6feb", weight: 2, fillColor: "#1f6feb", fillOpacity: 0.14 },
   }).addTo(DEV_MAP);
 
-  // 2. Buffer ring — try Turf.js for a real buffer; otherwise skip silently.
+  // 2. Buffer ring (optional — needs Turf.js)
   const bufferFt = Number(NYCHA_BUFFER);
   let bufferedFeat = null;
   if (typeof turf !== "undefined" && turf && typeof turf.buffer === "function") {
@@ -834,24 +853,24 @@ async function openDevMap(dev) {
     }
   }
 
-  // 3. Filter shootings to those near the development. Use Leaflet bounds
-  // (always works, no Turf dependency). Bounds = buffered shape if available,
-  // otherwise polygon bounds expanded by buffer width.
-  if (!MAP_INCIDENTS) MAP_INCIDENTS = parseIncidents();
-  let fitBounds;
+  // 3. Bounding box for fitting + incident filtering
+  let bbox;
   if (bufferedFeat) {
-    fitBounds = L.geoJSON(bufferedFeat).getBounds();
+    bbox = L.geoJSON(bufferedFeat).getBounds();
   } else {
     const pb = polygon.getBounds();
-    const padDegLat = bufferFt / 364320;
-    const padDegLon = bufferFt / 287000;
-    fitBounds = L.latLngBounds(
-      [pb.getSouth() - padDegLat, pb.getWest() - padDegLon],
-      [pb.getNorth() + padDegLat, pb.getEast() + padDegLon],
+    const padLat = bufferFt / 364320;
+    const padLon = bufferFt / 287000;
+    bbox = L.latLngBounds(
+      [pb.getSouth() - padLat, pb.getWest() - padLon],
+      [pb.getNorth() + padLat, pb.getEast() + padLon],
     );
   }
+
+  // 4. Shooting markers within the buffered shape
+  if (!MAP_INCIDENTS) MAP_INCIDENTS = parseIncidents();
   const incidents = MAP_INCIDENTS.filter(i =>
-    i.lat != null && i.lon != null && fitBounds.contains([i.lat, i.lon]),
+    i.lat != null && i.lon != null && bbox.contains([i.lat, i.lon]),
   );
   for (const i of incidents) {
     L.circleMarker([i.lat, i.lon], {
@@ -865,11 +884,14 @@ async function openDevMap(dev) {
     ).addTo(DEV_MAP);
   }
 
-  // 4. Fit + force Leaflet to recompute its container size.
-  DEV_MAP.fitBounds(fitBounds, { padding: [24, 24] });
-  DEV_MAP.invalidateSize();
-  // One more invalidateSize after the panel transition fully settles, just in case.
-  setTimeout(() => { if (DEV_MAP) DEV_MAP.invalidateSize(); }, 200);
+  // 5. NOW fit to the buffered bounds (size is known correct from step 0)
+  DEV_MAP.fitBounds(bbox, { padding: [24, 24], maxZoom: 18 });
+  // And once more after any pending layout settles.
+  setTimeout(() => {
+    if (!DEV_MAP) return;
+    DEV_MAP.invalidateSize();
+    DEV_MAP.fitBounds(bbox, { padding: [24, 24], maxZoom: 18 });
+  }, 250);
 
   meta.textContent +=
     ` · ${incidents.length} plotted on map (${incidents.filter(i => i.fatal).length} fatal)`;
